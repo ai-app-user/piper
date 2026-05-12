@@ -1,0 +1,104 @@
+#ifndef HYPERSYNC_JOBS_BUFFER_TRANSPORT_HPP
+#define HYPERSYNC_JOBS_BUFFER_TRANSPORT_HPP
+
+// Generic buffer transport jobs.
+//
+// These jobs bridge BufQueue ownership across a stream transport. The sender
+// consumes owned raw buffers, serializes one fixed-size payload frame, and
+// releases the source handle. The receiver accepts frames, acquires destination
+// buffers from its local pool, copies frame bytes into those buffers, and pushes
+// handles into its output queue. Payload interpretation remains downstream.
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <string>
+
+#include "common/buffer_pool.hpp"
+#include "common/socket_utils.hpp"
+#include "jobs/threaded_job.hpp"
+
+namespace hypersync {
+
+enum class BufferTransportKind {
+    tcp,
+    unix_socket,
+};
+
+struct BufferTransportEndpoint {
+    BufferTransportKind kind = BufferTransportKind::tcp;
+    std::string host = "127.0.0.1";
+    std::uint16_t port = 0;
+    std::filesystem::path path;
+
+    [[nodiscard]] static BufferTransportEndpoint tcp(std::string host, std::uint16_t port);
+    [[nodiscard]] static BufferTransportEndpoint unix_socket(std::filesystem::path path);
+    [[nodiscard]] static BufferTransportEndpoint parse(const std::string& value);
+    [[nodiscard]] std::string to_string() const;
+};
+
+struct BufferTransportStats {
+    std::uint64_t buffers = 0;
+    std::uint64_t payload_bytes = 0;
+};
+
+using BufferPayloadSizeFn = std::function<std::size_t(RawBufferPool&, const BufferHandle&)>;
+
+class BufferSenderJob : public ThreadedJob {
+public:
+    BufferSenderJob(std::size_t worker_count,
+                    BufQueue& input,
+                    const BufferPoolRegistry& registry,
+                    BufferTransportEndpoint endpoint,
+                    BufferPayloadSizeFn payload_size_fn = {});
+
+    [[nodiscard]] BufferTransportStats stats() const;
+
+protected:
+    void run_worker(std::size_t worker_index) override;
+    void on_stop_requested() override;
+
+private:
+    [[nodiscard]] ScopedFd connect() const;
+
+    BufQueue& input_;
+    const BufferPoolRegistry& registry_;
+    BufferTransportEndpoint endpoint_;
+    BufferPayloadSizeFn payload_size_fn_;
+    std::atomic<std::uint64_t> buffers_sent_ {0};
+    std::atomic<std::uint64_t> payload_bytes_sent_ {0};
+};
+
+class BufferReceiverJob : public ThreadedJob {
+public:
+    BufferReceiverJob(std::size_t worker_count,
+                      RawBufferPool& output_pool,
+                      BufQueue& output,
+                      BufferTransportEndpoint endpoint);
+    ~BufferReceiverJob() override;
+
+    [[nodiscard]] BufferTransportStats stats() const;
+
+protected:
+    void run_worker(std::size_t worker_index) override;
+    void on_starting() override;
+    void on_stop_requested() override;
+    void on_all_workers_finished() override;
+
+private:
+    [[nodiscard]] ScopedFd accept_one() const;
+    [[nodiscard]] BufferHandle acquire_buffer();
+
+    RawBufferPool& output_pool_;
+    BufQueue& output_;
+    BufferTransportEndpoint endpoint_;
+    ScopedFd listener_;
+    std::atomic<std::uint64_t> buffers_received_ {0};
+    std::atomic<std::uint64_t> payload_bytes_received_ {0};
+};
+
+}  // namespace hypersync
+
+#endif
