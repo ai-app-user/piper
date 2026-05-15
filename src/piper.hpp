@@ -22,6 +22,7 @@
 #include "jobs/job.hpp"
 #include "jobs/queue_job.hpp"
 #include "jobs/threaded_job.hpp"
+#include "monitoring/runtime_metrics.hpp"
 #include "monitoring/status_monitor.hpp"
 
 #endif

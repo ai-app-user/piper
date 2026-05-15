@@ -40,7 +40,7 @@ protected:
     virtual std::uint64_t process_buffer(const BufferHandle& handle, RawBufferPool& pool) = 0;
 
 private:
-    [[nodiscard]] bool process_and_forward(const BufferHandle& handle);
+    [[nodiscard]] bool process_and_forward(std::size_t worker_index, const BufferHandle& handle);
 
     BufQueue& input_;
     BufQueue& output_;

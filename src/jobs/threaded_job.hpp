@@ -5,8 +5,12 @@
 #include <cstddef>
 #include <exception>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
+
+#include "common/buffer_pool.hpp"
+#include "monitoring/runtime_metrics.hpp"
 
 namespace hypersync {
 
@@ -38,6 +42,9 @@ public:
     // Configured number of worker threads.
     [[nodiscard]] std::size_t worker_count() const noexcept;
 
+    // Generic runtime wait-state metrics collected by the shared job helpers.
+    [[nodiscard]] const ThreadedJobRuntimeMetrics& runtime_metrics() const noexcept;
+
 protected:
     // True after stop() has been requested.
     [[nodiscard]] bool stop_requested() const noexcept;
@@ -54,11 +61,28 @@ protected:
     // Optional hook executed by the final worker thread before running() becomes false.
     virtual void on_all_workers_finished();
 
+    // Temporarily mark a worker as waiting or doing owned I/O. Use this only
+    // around code paths that can actually block; do not wrap every hot-path
+    // buffer operation when the non-blocking fast path succeeds.
+    [[nodiscard]] RuntimeStateScope runtime_state_scope(std::size_t worker_index,
+                                                        RuntimeState state) noexcept;
+
+    // Generic queue/pool helpers. They try the non-blocking fast path first and
+    // enter the relevant wait state only when backpressure is real.
+    [[nodiscard]] bool wait_for_input(std::size_t worker_index, BufQueue& queue, BufferHandle& handle);
+    [[nodiscard]] bool wait_for_input(std::size_t worker_index, ShardedBufQueue& queue, BufferHandle& handle);
+    [[nodiscard]] bool wait_for_output(std::size_t worker_index, BufQueue& queue, const BufferHandle& handle);
+    [[nodiscard]] bool wait_for_output(std::size_t worker_index,
+                                       ShardedBufQueue& queue,
+                                       const BufferHandle& handle);
+    [[nodiscard]] std::optional<BufferHandle> wait_for_pool(std::size_t worker_index, RawBufferPool& pool);
+
 private:
     void worker_entry(std::size_t worker_index);
     void capture_exception(std::exception_ptr error);
 
     const std::size_t worker_count_;
+    ThreadedJobRuntimeMetrics runtime_metrics_;
     mutable std::mutex mutex_;
     mutable std::mutex exception_mutex_;
     std::vector<std::thread> workers_;

@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -175,18 +176,24 @@ BufferTransportStats BufferSenderJob::stats() const {
 }
 
 void BufferSenderJob::run_worker(std::size_t worker_index) {
-    (void)worker_index;
-    ScopedFd fd = connect();
+    ScopedFd fd;
+    {
+        auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+        fd = connect();
+    }
     BufferHandle handle;
     while (!stop_requested()) {
-        if (!input_.pop_wait(handle)) {
+        if (!wait_for_input(worker_index, input_, handle)) {
             break;
         }
         RawBufferPool& pool = registry_.pool(handle.pool_id);
         const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn_);
         const std::array<std::byte, 32> header = make_header(handle.pool_id, payload_bytes);
-        write_all(fd.get(), header.data(), header.size());
-        write_all(fd.get(), pool.data(handle), payload_bytes);
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            write_all(fd.get(), header.data(), header.size());
+            write_all(fd.get(), pool.data(handle), payload_bytes);
+        }
         pool.release(handle);
         buffers_sent_.fetch_add(1U, std::memory_order_relaxed);
         payload_bytes_sent_.fetch_add(payload_bytes, std::memory_order_relaxed);
@@ -233,32 +240,38 @@ void BufferReceiverJob::on_starting() {
 }
 
 void BufferReceiverJob::run_worker(std::size_t worker_index) {
-    (void)worker_index;
-    ScopedFd fd = accept_one();
+    ScopedFd fd;
+    {
+        auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+        fd = accept_one();
+    }
     for (;;) {
         std::array<std::byte, 32> header {};
-        if (!read_exact_or_eof(fd.get(), header.data(), header.size())) {
-            break;
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            if (!read_exact_or_eof(fd.get(), header.data(), header.size())) {
+                break;
+            }
         }
         const ParsedHeader parsed = parse_header(header);
-        if (parsed.pool_id != output_pool_.pool_id()) {
-            throw std::runtime_error("buffer transport frame pool id does not match receiver pool");
-        }
         if (parsed.payload_bytes > output_pool_.buffer_size_bytes()) {
             throw std::runtime_error("buffer transport frame exceeds receiver buffer size");
         }
 
-        BufferHandle handle = acquire_buffer();
+        BufferHandle handle = acquire_buffer(worker_index);
         if (parsed.payload_bytes < output_pool_.buffer_size_bytes()) {
             std::memset(static_cast<std::byte*>(output_pool_.data(handle)) + parsed.payload_bytes,
                         0,
                         output_pool_.buffer_size_bytes() - parsed.payload_bytes);
         }
-        if (!read_exact_or_eof(fd.get(), output_pool_.data(handle), parsed.payload_bytes)) {
-            output_pool_.release(handle);
-            throw std::runtime_error("unexpected EOF while reading buffer payload");
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            if (!read_exact_or_eof(fd.get(), output_pool_.data(handle), parsed.payload_bytes)) {
+                output_pool_.release(handle);
+                throw std::runtime_error("unexpected EOF while reading buffer payload");
+            }
         }
-        if (!output_.push_wait(handle)) {
+        if (!wait_for_output(worker_index, output_, handle)) {
             output_pool_.release(handle);
             break;
         }
@@ -281,14 +294,125 @@ ScopedFd BufferReceiverJob::accept_one() const {
     return accept_tcp(listener_.get());
 }
 
-BufferHandle BufferReceiverJob::acquire_buffer() {
-    while (!stop_requested()) {
-        if (auto handle = output_pool_.try_acquire(); handle.has_value()) {
-            return *handle;
-        }
-        std::this_thread::yield();
+BufferHandle BufferReceiverJob::acquire_buffer(std::size_t worker_index) {
+    if (auto handle = wait_for_pool(worker_index, output_pool_); handle.has_value()) {
+        return *handle;
     }
     throw std::runtime_error("buffer receiver stopped while waiting for output buffer");
+}
+
+BufferStreamSenderJob::BufferStreamSenderJob(std::size_t worker_count,
+                                             BufQueue& input,
+                                             const BufferPoolRegistry& registry,
+                                             int fd,
+                                             BufferPayloadSizeFn payload_size_fn)
+    : ThreadedJob(worker_count),
+      input_(input),
+      registry_(registry),
+      fd_(fd),
+      payload_size_fn_(std::move(payload_size_fn)) {
+    if (fd_ < 0) {
+        throw std::invalid_argument("buffer stream sender requires a valid fd");
+    }
+}
+
+BufferTransportStats BufferStreamSenderJob::stats() const {
+    return {buffers_sent_.load(std::memory_order_acquire),
+            payload_bytes_sent_.load(std::memory_order_acquire)};
+}
+
+void BufferStreamSenderJob::run_worker(std::size_t worker_index) {
+    BufferHandle handle;
+    while (!stop_requested()) {
+        if (!wait_for_input(worker_index, input_, handle)) {
+            break;
+        }
+        RawBufferPool& pool = registry_.pool(handle.pool_id);
+        const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn_);
+        const std::array<std::byte, 32> header = make_header(handle.pool_id, payload_bytes);
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            write_all(fd_, header.data(), header.size());
+            write_all(fd_, pool.data(handle), payload_bytes);
+        }
+        pool.release(handle);
+        buffers_sent_.fetch_add(1U, std::memory_order_relaxed);
+        payload_bytes_sent_.fetch_add(payload_bytes, std::memory_order_relaxed);
+    }
+    ::shutdown(fd_, SHUT_WR);
+}
+
+void BufferStreamSenderJob::on_stop_requested() {
+    input_.close();
+}
+
+BufferStreamReceiverJob::BufferStreamReceiverJob(std::size_t worker_count,
+                                                 RawBufferPool& output_pool,
+                                                 BufQueue& output,
+                                                 int fd)
+    : ThreadedJob(worker_count),
+      output_pool_(output_pool),
+      output_(output),
+      fd_(fd) {
+    if (fd_ < 0) {
+        throw std::invalid_argument("buffer stream receiver requires a valid fd");
+    }
+}
+
+BufferTransportStats BufferStreamReceiverJob::stats() const {
+    return {buffers_received_.load(std::memory_order_acquire),
+            payload_bytes_received_.load(std::memory_order_acquire)};
+}
+
+void BufferStreamReceiverJob::run_worker(std::size_t worker_index) {
+    for (;;) {
+        std::array<std::byte, 32> header {};
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            if (!read_exact_or_eof(fd_, header.data(), header.size())) {
+                break;
+            }
+        }
+        const ParsedHeader parsed = parse_header(header);
+        if (parsed.payload_bytes > output_pool_.buffer_size_bytes()) {
+            throw std::runtime_error("buffer stream frame exceeds receiver buffer size");
+        }
+
+        BufferHandle handle = acquire_buffer(worker_index);
+        if (parsed.payload_bytes < output_pool_.buffer_size_bytes()) {
+            std::memset(static_cast<std::byte*>(output_pool_.data(handle)) + parsed.payload_bytes,
+                        0,
+                        output_pool_.buffer_size_bytes() - parsed.payload_bytes);
+        }
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            if (!read_exact_or_eof(fd_, output_pool_.data(handle), parsed.payload_bytes)) {
+                output_pool_.release(handle);
+                throw std::runtime_error("unexpected EOF while reading buffer stream payload");
+            }
+        }
+        if (!wait_for_output(worker_index, output_, handle)) {
+            output_pool_.release(handle);
+            break;
+        }
+        buffers_received_.fetch_add(1U, std::memory_order_relaxed);
+        payload_bytes_received_.fetch_add(parsed.payload_bytes, std::memory_order_relaxed);
+    }
+}
+
+void BufferStreamReceiverJob::on_stop_requested() {
+    output_.close();
+}
+
+void BufferStreamReceiverJob::on_all_workers_finished() {
+    output_.close();
+}
+
+BufferHandle BufferStreamReceiverJob::acquire_buffer(std::size_t worker_index) {
+    if (auto handle = wait_for_pool(worker_index, output_pool_); handle.has_value()) {
+        return *handle;
+    }
+    throw std::runtime_error("buffer stream receiver stopped while waiting for output buffer");
 }
 
 }  // namespace hypersync

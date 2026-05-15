@@ -13,11 +13,15 @@
 #include <filesystem>
 #include <functional>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
+
+#include "monitoring/runtime_metrics.hpp"
 
 namespace hypersync {
 
@@ -29,6 +33,8 @@ struct MonitorJobSnapshot {
     std::uint64_t byte_count = 0;
     std::string count_unit = "buffers";
     std::string detail;
+    bool has_runtime_metrics = false;
+    RuntimeMetricsSnapshot runtime_metrics;
 };
 
 struct MonitorQueueSnapshot {
@@ -72,11 +78,40 @@ private:
     };
 
     [[nodiscard]] double elapsed_seconds() const;
+    [[nodiscard]] double process_cpu_seconds() const;
+
+    struct JobRateSample {
+        bool initialized = false;
+        std::chrono::steady_clock::time_point sampled_at {};
+        std::uint64_t processed_count = 0;
+        std::uint64_t byte_count = 0;
+        std::uint64_t interval_count = 0;
+        double start_processed_rate = 0.0;
+        double start_byte_rate = 0.0;
+        double mid_processed_rate = 0.0;
+        double mid_byte_rate = 0.0;
+        double current_processed_rate = 0.0;
+        double current_byte_rate = 0.0;
+        double peak_processed_rate = 0.0;
+        double peak_byte_rate = 0.0;
+        double previous_processed_rate = 0.0;
+        double previous_byte_rate = 0.0;
+        double mid_processed_rate_sum = 0.0;
+        double mid_byte_rate_sum = 0.0;
+        std::uint64_t mid_rate_count = 0;
+        bool tail_available = false;
+        double tail_processed_rate = 0.0;
+        double tail_byte_rate = 0.0;
+    };
+
+    [[nodiscard]] JobRateSample update_job_rate_sample(const MonitorJobSnapshot& snapshot) const;
 
     std::chrono::steady_clock::time_point started_at_;
     mutable std::mutex mutex_;
     std::vector<JobEntry> jobs_;
     std::vector<QueueEntry> queues_;
+    mutable std::mutex rate_mutex_;
+    mutable std::unordered_map<std::string, JobRateSample> job_rate_samples_;
 };
 
 class StatusServer {
@@ -104,6 +139,38 @@ private:
     const StatusRegistry& registry_;
     std::atomic<bool> running_ {false};
     int server_fd_ = -1;
+    std::thread thread_;
+};
+
+class PeriodicStatusReporter {
+public:
+    using Writer = std::function<void(std::string)>;
+
+    PeriodicStatusReporter(const StatusRegistry& registry,
+                           std::chrono::milliseconds interval,
+                           Writer writer);
+    ~PeriodicStatusReporter();
+
+    PeriodicStatusReporter(const PeriodicStatusReporter&) = delete;
+    PeriodicStatusReporter& operator=(const PeriodicStatusReporter&) = delete;
+
+    // Start the background reporting thread.
+    void start();
+
+    // Stop reporting and join the background thread.
+    void stop();
+
+    [[nodiscard]] bool running() const noexcept;
+
+private:
+    void report_loop();
+
+    const StatusRegistry& registry_;
+    std::chrono::milliseconds interval_;
+    Writer writer_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> running_ {false};
     std::thread thread_;
 };
 

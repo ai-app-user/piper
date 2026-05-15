@@ -242,6 +242,10 @@ public:
     // Yield/retry until a buffer is acquired.
     [[nodiscard]] BufferHandle acquire_spin();
 
+    // Block until a buffer is acquired. Use this for backpressure paths where
+    // burning CPU while the downstream stage drains would hide the real limit.
+    [[nodiscard]] BufferHandle acquire_wait();
+
     // Return an owned buffer to the pool and invalidate the old generation.
     void release(const BufferHandle& handle);
 
@@ -272,6 +276,8 @@ private:
     std::vector<std::byte> storage_;
     mutable std::mutex free_mutex_;
     std::vector<std::uint32_t> free_indices_;
+    mutable std::mutex wait_mutex_;
+    std::condition_variable cv_available_;
     std::atomic<std::size_t> available_count_ {0};
     std::vector<std::atomic<std::uint32_t>> generations_;
     std::vector<std::atomic<std::uint8_t>> owned_;

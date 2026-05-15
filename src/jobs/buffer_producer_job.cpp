@@ -1,7 +1,5 @@
 #include "jobs/buffer_producer_job.hpp"
 
-#include <thread>
-
 namespace hypersync {
 
 BufferProducerJob::BufferProducerJob(std::size_t worker_count,
@@ -44,7 +42,7 @@ void BufferProducerJob::run_worker(std::size_t worker_index) {
         }
 
         BufferHandle handle;
-        if (!acquire_buffer(handle)) {
+        if (!acquire_buffer(worker_index, handle)) {
             break;
         }
         fill_buffer(handle, sequence);
@@ -71,22 +69,19 @@ bool BufferProducerJob::try_take_next_sequence(std::uint64_t& sequence) {
     return buffer_count_ == 0U || sequence < buffer_count_;
 }
 
-bool BufferProducerJob::acquire_buffer(BufferHandle& handle) {
-    while (!stop_requested()) {
-        if (auto acquired = pool_.try_acquire(); acquired.has_value()) {
-            handle = *acquired;
-            return true;
-        }
-        std::this_thread::yield();
+bool BufferProducerJob::acquire_buffer(std::size_t worker_index, BufferHandle& handle) {
+    if (auto acquired = wait_for_pool(worker_index, pool_); acquired.has_value()) {
+        handle = *acquired;
+        return true;
     }
     return false;
 }
 
 bool BufferProducerJob::push_output(const BufferHandle& handle, std::size_t worker_index) {
     if (sharded_output_ != nullptr) {
-        return sharded_output_->push_wait(worker_index, handle);
+        return wait_for_output(worker_index, *sharded_output_, handle);
     }
-    return output_ != nullptr && output_->push_wait(handle);
+    return output_ != nullptr && wait_for_output(worker_index, *output_, handle);
 }
 
 void BufferProducerJob::close_output() {

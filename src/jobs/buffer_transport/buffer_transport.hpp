@@ -89,12 +89,65 @@ protected:
 
 private:
     [[nodiscard]] ScopedFd accept_one() const;
-    [[nodiscard]] BufferHandle acquire_buffer();
+    [[nodiscard]] BufferHandle acquire_buffer(std::size_t worker_index);
 
     RawBufferPool& output_pool_;
     BufQueue& output_;
     BufferTransportEndpoint endpoint_;
     ScopedFd listener_;
+    std::atomic<std::uint64_t> buffers_received_ {0};
+    std::atomic<std::uint64_t> payload_bytes_received_ {0};
+};
+
+// Generic writer for an already-open stream fd. The job does not own or
+// interpret the payload; it only transfers raw buffer bytes then releases the
+// source handle. This is used for full-duplex protocols where connection setup
+// is handled by the pipeline owner.
+class BufferStreamSenderJob : public ThreadedJob {
+public:
+    BufferStreamSenderJob(std::size_t worker_count,
+                          BufQueue& input,
+                          const BufferPoolRegistry& registry,
+                          int fd,
+                          BufferPayloadSizeFn payload_size_fn = {});
+
+    [[nodiscard]] BufferTransportStats stats() const;
+
+protected:
+    void run_worker(std::size_t worker_index) override;
+    void on_stop_requested() override;
+
+private:
+    BufQueue& input_;
+    const BufferPoolRegistry& registry_;
+    int fd_ = -1;
+    BufferPayloadSizeFn payload_size_fn_;
+    std::atomic<std::uint64_t> buffers_sent_ {0};
+    std::atomic<std::uint64_t> payload_bytes_sent_ {0};
+};
+
+// Generic reader for an already-open stream fd. Received frames are copied into
+// owned buffers from output_pool_ and pushed to output_ as opaque handles.
+class BufferStreamReceiverJob : public ThreadedJob {
+public:
+    BufferStreamReceiverJob(std::size_t worker_count,
+                            RawBufferPool& output_pool,
+                            BufQueue& output,
+                            int fd);
+
+    [[nodiscard]] BufferTransportStats stats() const;
+
+protected:
+    void run_worker(std::size_t worker_index) override;
+    void on_stop_requested() override;
+    void on_all_workers_finished() override;
+
+private:
+    [[nodiscard]] BufferHandle acquire_buffer(std::size_t worker_index);
+
+    RawBufferPool& output_pool_;
+    BufQueue& output_;
+    int fd_ = -1;
     std::atomic<std::uint64_t> buffers_received_ {0};
     std::atomic<std::uint64_t> payload_bytes_received_ {0};
 };

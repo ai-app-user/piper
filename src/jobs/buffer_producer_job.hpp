@@ -44,7 +44,7 @@ protected:
 
 private:
     [[nodiscard]] bool try_take_next_sequence(std::uint64_t& sequence);
-    [[nodiscard]] bool acquire_buffer(BufferHandle& handle);
+    [[nodiscard]] bool acquire_buffer(std::size_t worker_index, BufferHandle& handle);
     [[nodiscard]] bool push_output(const BufferHandle& handle, std::size_t worker_index);
     void close_output();
 

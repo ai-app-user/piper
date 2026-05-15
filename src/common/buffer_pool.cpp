@@ -557,6 +557,18 @@ BufferHandle RawBufferPool::acquire_spin() {
     }
 }
 
+BufferHandle RawBufferPool::acquire_wait() {
+    for (;;) {
+        if (auto handle = try_acquire(); handle.has_value()) {
+            return *handle;
+        }
+        std::unique_lock<std::mutex> lock(wait_mutex_);
+        cv_available_.wait(lock, [this] {
+            return available_count_.load(std::memory_order_acquire) != 0U;
+        });
+    }
+}
+
 void RawBufferPool::release(const BufferHandle& handle) {
     validate_live_handle(handle);
     std::uint8_t expected = 1U;
@@ -574,6 +586,7 @@ void RawBufferPool::release(const BufferHandle& handle) {
     generations_[handle.index].store(next_generation, std::memory_order_release);
     in_use_.fetch_sub(1U, std::memory_order_acq_rel);
     push_free_index(handle.index);
+    cv_available_.notify_one();
 }
 
 std::byte* RawBufferPool::data(const BufferHandle& handle) {

@@ -57,9 +57,9 @@ void BufferConsumerJob::process_and_record(const BufferHandle& handle) {
 
 bool BufferConsumerJob::pop_input_wait(std::size_t worker_index, BufferHandle& handle) {
     if (sharded_input_ != nullptr) {
-        return sharded_input_->pop_wait(worker_index, handle);
+        return wait_for_input(worker_index, *sharded_input_, handle);
     }
-    return input_ != nullptr && input_->pop_wait(handle);
+    return input_ != nullptr && wait_for_input(worker_index, *input_, handle);
 }
 
 bool BufferConsumerJob::try_pop_input(std::size_t worker_index, BufferHandle& handle) {

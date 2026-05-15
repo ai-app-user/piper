@@ -21,19 +21,18 @@ BufferTransformStats BufferTransformJob::transform_stats() const {
 }
 
 void BufferTransformJob::run_worker(std::size_t worker_index) {
-    (void)worker_index;
     BufferHandle handle;
     while (!stop_requested()) {
-        if (!input_.pop_wait(handle)) {
+        if (!wait_for_input(worker_index, input_, handle)) {
             break;
         }
-        if (!process_and_forward(handle)) {
+        if (!process_and_forward(worker_index, handle)) {
             break;
         }
     }
 
     while (input_.try_pop(handle)) {
-        if (!process_and_forward(handle)) {
+        if (!process_and_forward(worker_index, handle)) {
             break;
         }
     }
@@ -52,12 +51,12 @@ RawBufferPool& BufferTransformJob::pool_for(const BufferHandle& handle) const {
     return registry_.pool(handle.pool_id);
 }
 
-bool BufferTransformJob::process_and_forward(const BufferHandle& handle) {
+bool BufferTransformJob::process_and_forward(std::size_t worker_index, const BufferHandle& handle) {
     RawBufferPool& pool = pool_for(handle);
     const std::uint64_t byte_count = process_buffer(handle, pool);
     bytes_transformed_.fetch_add(byte_count, std::memory_order_relaxed);
     buffers_transformed_.fetch_add(1U, std::memory_order_relaxed);
-    if (!output_.push_wait(handle)) {
+    if (!wait_for_output(worker_index, output_, handle)) {
         pool.release(handle);
         return false;
     }
