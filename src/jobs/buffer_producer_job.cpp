@@ -35,6 +35,9 @@ void BufferProducerJob::run_worker(std::size_t worker_index) {
         if (stop_requested()) {
             break;
         }
+        if (!wait_until_worker_active(worker_index)) {
+            break;
+        }
 
         std::uint64_t sequence = 0;
         if (!try_take_next_sequence(sequence)) {

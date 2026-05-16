@@ -28,6 +28,9 @@ BufferConsumerStats BufferConsumerJob::consumer_stats() const {
 void BufferConsumerJob::run_worker(std::size_t worker_index) {
     BufferHandle handle;
     while (!stop_requested()) {
+        if (!wait_until_worker_active(worker_index)) {
+            break;
+        }
         if (!pop_input_wait(worker_index, handle)) {
             break;
         }

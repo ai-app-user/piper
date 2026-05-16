@@ -2,6 +2,7 @@
 #define HYPERSYNC_JOBS_THREADED_JOB_HPP
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <mutex>
@@ -42,12 +43,28 @@ public:
     // Configured number of worker threads.
     [[nodiscard]] std::size_t worker_count() const noexcept;
 
+    // Current active worker target. Workers with index >= this limit park
+    // cooperatively between work items instead of being killed mid-operation.
+    [[nodiscard]] std::size_t active_worker_limit() const noexcept;
+
+    // Adjust active workers in [1, worker_count()]. Returns the clamped value.
+    std::size_t set_active_worker_limit(std::size_t active_workers) noexcept;
+
     // Generic runtime wait-state metrics collected by the shared job helpers.
     [[nodiscard]] const ThreadedJobRuntimeMetrics& runtime_metrics() const noexcept;
 
 protected:
     // True after stop() has been requested.
     [[nodiscard]] bool stop_requested() const noexcept;
+
+    // True when this worker is allowed to take another unit of work.
+    [[nodiscard]] bool worker_active(std::size_t worker_index) const noexcept;
+
+    // Park a worker while autoscaling has placed it above the active limit.
+    // Concrete run loops call this between buffer/file batches.
+    [[nodiscard]] bool wait_until_worker_active(std::size_t worker_index,
+                                                std::chrono::microseconds sleep_interval =
+                                                    std::chrono::microseconds(100)) noexcept;
 
     // Called from each worker thread. Concrete jobs implement the hot path here.
     virtual void run_worker(std::size_t worker_index) = 0;
@@ -89,6 +106,8 @@ private:
     std::exception_ptr first_exception_;
     std::atomic<bool> running_ {false};
     std::atomic<bool> stop_requested_ {false};
+    std::atomic<bool> wait_requested_ {false};
+    std::atomic<std::size_t> active_worker_limit_;
     std::atomic<std::size_t> active_workers_ {0};
 };
 

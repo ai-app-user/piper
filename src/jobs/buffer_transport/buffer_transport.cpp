@@ -2,6 +2,7 @@
 
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -82,6 +83,16 @@ std::size_t transport_payload_bytes(RawBufferPool& pool,
         return payload_bytes;
     }
     return pool.buffer_size_bytes();
+}
+
+void send_buffer_frame(int fd,
+                       RawBufferPool& pool,
+                       const BufferHandle& handle,
+                       const BufferPayloadSizeFn& payload_size_fn) {
+    const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn);
+    const std::array<std::byte, 32> header = make_header(handle.pool_id, payload_bytes);
+    write_all(fd, header.data(), header.size());
+    write_all(fd, pool.data(handle), payload_bytes);
 }
 
 struct ParsedHeader {
@@ -187,13 +198,11 @@ void BufferSenderJob::run_worker(std::size_t worker_index) {
             break;
         }
         RawBufferPool& pool = registry_.pool(handle.pool_id);
-        const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn_);
-        const std::array<std::byte, 32> header = make_header(handle.pool_id, payload_bytes);
         {
             auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
-            write_all(fd.get(), header.data(), header.size());
-            write_all(fd.get(), pool.data(handle), payload_bytes);
+            send_buffer_frame(fd.get(), pool, handle, payload_size_fn_);
         }
+        const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn_);
         pool.release(handle);
         buffers_sent_.fetch_add(1U, std::memory_order_relaxed);
         payload_bytes_sent_.fetch_add(payload_bytes, std::memory_order_relaxed);
@@ -210,6 +219,83 @@ ScopedFd BufferSenderJob::connect() const {
         return connect_unix(endpoint_.path.string(), 500, 10);
     }
     return connect_tcp(endpoint_.host, endpoint_.port, 500, 10);
+}
+
+BufferPrioritySenderJob::BufferPrioritySenderJob(std::size_t worker_count,
+                                                 BufQueue& priority_input,
+                                                 BufQueue& bulk_input,
+                                                 const BufferPoolRegistry& registry,
+                                                 BufferTransportEndpoint endpoint,
+                                                 std::size_t priority_low_watermark,
+                                                 BufferPayloadSizeFn payload_size_fn)
+    : ThreadedJob(worker_count),
+      priority_input_(priority_input),
+      bulk_input_(bulk_input),
+      registry_(registry),
+      endpoint_(std::move(endpoint)),
+      priority_low_watermark_(priority_low_watermark),
+      payload_size_fn_(std::move(payload_size_fn)) {}
+
+BufferTransportStats BufferPrioritySenderJob::stats() const {
+    return {buffers_sent_.load(std::memory_order_acquire),
+            payload_bytes_sent_.load(std::memory_order_acquire)};
+}
+
+void BufferPrioritySenderJob::run_worker(std::size_t worker_index) {
+    ScopedFd fd;
+    {
+        auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+        fd = connect();
+    }
+    BufferHandle handle;
+    while (!stop_requested()) {
+        if (!wait_until_worker_active(worker_index)) {
+            break;
+        }
+        if (!take_next_buffer(worker_index, handle)) {
+            break;
+        }
+        RawBufferPool& pool = registry_.pool(handle.pool_id);
+        const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn_);
+        {
+            auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
+            send_buffer_frame(fd.get(), pool, handle, payload_size_fn_);
+        }
+        pool.release(handle);
+        buffers_sent_.fetch_add(1U, std::memory_order_relaxed);
+        payload_bytes_sent_.fetch_add(payload_bytes, std::memory_order_relaxed);
+    }
+    ::shutdown(fd.get(), SHUT_WR);
+}
+
+void BufferPrioritySenderJob::on_stop_requested() {
+    priority_input_.close();
+    bulk_input_.close();
+}
+
+ScopedFd BufferPrioritySenderJob::connect() const {
+    if (endpoint_.kind == BufferTransportKind::unix_socket) {
+        return connect_unix(endpoint_.path.string(), 500, 10);
+    }
+    return connect_tcp(endpoint_.host, endpoint_.port, 500, 10);
+}
+
+bool BufferPrioritySenderJob::take_next_buffer(std::size_t worker_index, BufferHandle& handle) {
+    while (!stop_requested()) {
+        if (priority_input_.try_pop(handle)) {
+            return true;
+        }
+        if (priority_input_.size() <= priority_low_watermark_ && bulk_input_.try_pop(handle)) {
+            return true;
+        }
+        if (priority_input_.closed() && bulk_input_.closed() &&
+            priority_input_.empty() && bulk_input_.empty()) {
+            return false;
+        }
+        auto wait_scope = runtime_state_scope(worker_index, RuntimeState::wait_input_empty);
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return false;
 }
 
 BufferReceiverJob::BufferReceiverJob(std::size_t worker_count,

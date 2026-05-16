@@ -23,6 +23,9 @@ BufferTransformStats BufferTransformJob::transform_stats() const {
 void BufferTransformJob::run_worker(std::size_t worker_index) {
     BufferHandle handle;
     while (!stop_requested()) {
+        if (!wait_until_worker_active(worker_index)) {
+            break;
+        }
         if (!wait_for_input(worker_index, input_, handle)) {
             break;
         }

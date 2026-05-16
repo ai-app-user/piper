@@ -26,9 +26,10 @@ enum class RuntimeState : std::uint8_t {
     wait_output_full = 3,
     wait_pool_empty = 4,
     wait_io = 5,
+    parked = 6,
 };
 
-inline constexpr std::size_t kRuntimeStateCount = 6;
+inline constexpr std::size_t kRuntimeStateCount = 7;
 
 using RuntimeStateCounts = std::array<std::uint64_t, kRuntimeStateCount>;
 using RuntimeCurrentCounts = std::array<std::size_t, kRuntimeStateCount>;

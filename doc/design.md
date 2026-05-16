@@ -40,6 +40,11 @@ Bounded queues are the preferred flow-control mechanism. When a downstream
 stage cannot keep up, its input queue eventually fills and naturally slows the
 upstream producer.
 
+When two inputs have different priority, use separate queues and a priority
+consumer/sender that always drains the high-priority queue first. Do not encode
+priority into payload bytes or teach the generic queue about application record
+types.
+
 ### Avoid Payload Copies
 
 Piper encourages ownership transfer instead of memory copies.
@@ -113,6 +118,63 @@ This keeps observability reusable while preserving the buffer-ownership model.
 When a pipeline slows down, the generic output should show whether each job is
 busy, starved for input, blocked on output backpressure, waiting for pool
 buffers, or inside its own external I/O.
+
+### Cooperative Autoscaling
+
+Piper includes a generic autoscaling controller for threaded Jobs. It is
+cooperative by design: workers are never killed while they own a buffer or are
+inside external I/O. Instead, `ThreadedJob` exposes an active-worker limit, and
+workers above that limit park between work items.
+
+The controller consumes only generic pressure metrics:
+
+- input queue fullness
+- output queue fullness
+- worker busy ratio
+- wait-for-input ratio
+- wait-for-output ratio
+- throughput per second
+
+It does not inspect payloads or know application semantics. A job-specific
+pipeline may expose richer counters, but scaling decisions should remain based
+on generic pressure unless the application explicitly owns a domain policy.
+
+Recommended behavior:
+
+- start at the configured initial worker count
+- scale up by the current probe step while input pressure is high and output is
+  not blocked; the initial step is normally 100% of the current worker count
+- scale down when output backpressure is high or input stays empty
+- back off when added workers do not improve throughput materially
+- after each backoff, reduce the probe step: 100%, 50%, 25%, then 12.5% by
+  default
+- use cooldown samples to avoid oscillation
+- always respect per-Job min/max bounds
+
+Fixed worker counts remain valid and are preferred for reproducible performance
+tests. For production-style adaptive runs, every job should be visible to the
+autoscale profile system. If a job is missing from a profile, Piper should
+materialize it with autoscale enabled, `min_workers=1`, `initial_workers=1`, and
+`max_workers=auto`, where `auto` resolves to `cpu_count * 2` unless the job or
+application supplies a smaller safe capacity.
+`JobAutoScaleRunner` is the live adapter: it periodically samples a metrics
+provider, updates the policy, and applies the resulting active-worker limit to
+the target `ThreadedJob`.
+
+For whole pipelines, use `PipelineAutoScaleRunner`. It tunes stages in pipeline
+order and only one stage is probed at a time. The score for a stage is how fast
+that stage pushes to its output, expressed as generic throughput per second.
+When the current stage reaches its configured limit, hits output backpressure,
+or rejects a probe, the runner advances to the next stage. This prevents
+multiple Jobs from changing at once and hiding which stage actually improved or
+hurt pipeline throughput.
+
+Autoscale settings are pipeline-profile scoped rather than global per job. The
+same job may learn different steady-state values in a scan pipeline, a data-read
+pipeline, a diff pipeline, or a writer pipeline. A first run can start unknown
+autoscalable jobs from one worker, persist learned values, and let later runs
+start from those learned settings while still adjusting if the workload or host
+changes.
 
 ## Library Scope
 

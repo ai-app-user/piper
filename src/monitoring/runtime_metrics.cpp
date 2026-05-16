@@ -33,6 +33,8 @@ std::string_view runtime_state_name(RuntimeState state) noexcept {
             return "wait_pool";
         case RuntimeState::wait_io:
             return "wait_io";
+        case RuntimeState::parked:
+            return "parked";
     }
     return "unknown";
 }

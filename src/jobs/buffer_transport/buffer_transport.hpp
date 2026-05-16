@@ -71,6 +71,39 @@ private:
     std::atomic<std::uint64_t> payload_bytes_sent_ {0};
 };
 
+// Generic sender with priority input. It always drains priority_input first and
+// sends bulk_input only when the priority queue is empty or below the configured
+// low watermark. Payloads remain opaque buffers.
+class BufferPrioritySenderJob : public ThreadedJob {
+public:
+    BufferPrioritySenderJob(std::size_t worker_count,
+                            BufQueue& priority_input,
+                            BufQueue& bulk_input,
+                            const BufferPoolRegistry& registry,
+                            BufferTransportEndpoint endpoint,
+                            std::size_t priority_low_watermark = 0,
+                            BufferPayloadSizeFn payload_size_fn = {});
+
+    [[nodiscard]] BufferTransportStats stats() const;
+
+protected:
+    void run_worker(std::size_t worker_index) override;
+    void on_stop_requested() override;
+
+private:
+    [[nodiscard]] ScopedFd connect() const;
+    [[nodiscard]] bool take_next_buffer(std::size_t worker_index, BufferHandle& handle);
+
+    BufQueue& priority_input_;
+    BufQueue& bulk_input_;
+    const BufferPoolRegistry& registry_;
+    BufferTransportEndpoint endpoint_;
+    std::size_t priority_low_watermark_ = 0;
+    BufferPayloadSizeFn payload_size_fn_;
+    std::atomic<std::uint64_t> buffers_sent_ {0};
+    std::atomic<std::uint64_t> payload_bytes_sent_ {0};
+};
+
 class BufferReceiverJob : public ThreadedJob {
 public:
     BufferReceiverJob(std::size_t worker_count,

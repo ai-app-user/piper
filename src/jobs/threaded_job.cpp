@@ -1,6 +1,7 @@
 #include "jobs/threaded_job.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <stdexcept>
 #include <thread>
 
@@ -8,7 +9,8 @@ namespace hypersync {
 
 ThreadedJob::ThreadedJob(std::size_t worker_count)
     : worker_count_(worker_count),
-      runtime_metrics_(worker_count) {
+      runtime_metrics_(worker_count),
+      active_worker_limit_(worker_count) {
     if (worker_count_ == 0U) {
         throw std::invalid_argument("threaded job worker count must be positive");
     }
@@ -29,6 +31,7 @@ void ThreadedJob::start() {
         first_exception_ = nullptr;
     }
     stop_requested_.store(false, std::memory_order_release);
+    wait_requested_.store(false, std::memory_order_release);
     active_workers_.store(worker_count_, std::memory_order_release);
     running_.store(true, std::memory_order_release);
     workers_.reserve(worker_count_);
@@ -40,6 +43,8 @@ void ThreadedJob::start() {
 }
 
 void ThreadedJob::wait() {
+    wait_requested_.store(true, std::memory_order_release);
+    active_worker_limit_.store(worker_count_, std::memory_order_release);
     std::vector<std::thread> workers;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -74,12 +79,42 @@ std::size_t ThreadedJob::worker_count() const noexcept {
     return worker_count_;
 }
 
+std::size_t ThreadedJob::active_worker_limit() const noexcept {
+    return active_worker_limit_.load(std::memory_order_acquire);
+}
+
+std::size_t ThreadedJob::set_active_worker_limit(std::size_t active_workers) noexcept {
+    if (wait_requested_.load(std::memory_order_acquire)) {
+        active_worker_limit_.store(worker_count_, std::memory_order_release);
+        return worker_count_;
+    }
+    const std::size_t clamped = std::clamp(active_workers, std::size_t {1}, worker_count_);
+    active_worker_limit_.store(clamped, std::memory_order_release);
+    return clamped;
+}
+
 const ThreadedJobRuntimeMetrics& ThreadedJob::runtime_metrics() const noexcept {
     return runtime_metrics_;
 }
 
 bool ThreadedJob::stop_requested() const noexcept {
     return stop_requested_.load(std::memory_order_acquire);
+}
+
+bool ThreadedJob::worker_active(std::size_t worker_index) const noexcept {
+    return worker_index < active_worker_limit_.load(std::memory_order_acquire);
+}
+
+bool ThreadedJob::wait_until_worker_active(std::size_t worker_index,
+                                           std::chrono::microseconds sleep_interval) noexcept {
+    if (worker_active(worker_index)) {
+        return !stop_requested();
+    }
+    auto wait_scope = runtime_state_scope(worker_index, RuntimeState::parked);
+    while (!stop_requested() && !worker_active(worker_index)) {
+        std::this_thread::sleep_for(sleep_interval);
+    }
+    return !stop_requested();
 }
 
 void ThreadedJob::on_starting() {}
