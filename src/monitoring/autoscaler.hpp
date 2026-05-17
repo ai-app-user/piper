@@ -44,6 +44,8 @@ struct AutoScalePolicy {
     std::uint64_t max_cooldown_samples = 2;
     std::uint64_t backoff_confirmation_samples = 3;
     std::uint64_t rejected_probe_cooldown_samples = 30;
+    double overload_scale_up = 1.10;
+    double overload_scale_down = 0.90;
 };
 
 struct AutoScaleMetrics {
@@ -54,6 +56,11 @@ struct AutoScaleMetrics {
     double wait_input_ratio = 0.0;
     double wait_output_ratio = 0.0;
     double throughput_per_second = 0.0;
+    // Optional app-provided pressure callback result. A value of 1.0 means the
+    // lane is balanced, >1.0 asks the generic scaler for more capacity, and
+    // <1.0 allows it to reclaim workers. Jobs may leave this at 1.0 and rely
+    // only on generic queue/busy/throughput signals.
+    double overload_score = 1.0;
 };
 
 struct AutoScaleDecision {

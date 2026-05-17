@@ -134,10 +134,16 @@ The controller consumes only generic pressure metrics:
 - wait-for-input ratio
 - wait-for-output ratio
 - throughput per second
+- optional overload score
 
 It does not inspect payloads or know application semantics. A job-specific
 pipeline may expose richer counters, but scaling decisions should remain based
 on generic pressure unless the application explicitly owns a domain policy.
+When a domain policy is required, the application should compress it into an
+`overload_score` callback result: `1.0` means balanced, `>1.0` means overloaded
+and eligible to scale up, and `<1.0` means underloaded and eligible to scale
+down. Piper still owns the scale decision and worker-limit application; the
+callback must not resize jobs or call neighboring jobs directly.
 
 Recommended behavior:
 

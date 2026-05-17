@@ -199,6 +199,8 @@ void AutoScaler::reset(AutoScalePolicy policy) {
     }
     policy_.initial_probe_step_ratio = std::clamp(policy_.initial_probe_step_ratio, 0.125, 1.0);
     policy_.min_probe_step_ratio = std::clamp(policy_.min_probe_step_ratio, 0.01, policy_.initial_probe_step_ratio);
+    policy_.overload_scale_up = std::max(1.0, policy_.overload_scale_up);
+    policy_.overload_scale_down = std::clamp(policy_.overload_scale_down, 0.0, 1.0);
     active_workers_ = clamp_workers(policy_.initial_workers == 0U ? policy_.min_workers
                                                                   : policy_.initial_workers);
     samples_since_change_ = policy_.cooldown_samples;
@@ -241,10 +243,18 @@ AutoScaleDecision AutoScaler::update(const AutoScaleMetrics& metrics) {
          metrics.input_available_ratio >= 0.95) &&
         metrics.busy_ratio >= policy_.busy_scale_up &&
         metrics.output_fullness < policy_.scale_up_output_fullness_limit;
+    const bool overload_pressure =
+        std::isfinite(metrics.overload_score) &&
+        metrics.overload_score >= policy_.overload_scale_up &&
+        metrics.output_fullness < policy_.scale_up_output_fullness_limit &&
+        metrics.wait_output_ratio < 0.25;
     const bool input_idle =
         metrics.input_fullness <= policy_.scale_down_input_fullness &&
         (metrics.wait_input_ratio >= policy_.idle_scale_down ||
          metrics.busy_ratio <= (1.0 - policy_.idle_scale_down));
+    const bool overload_idle =
+        std::isfinite(metrics.overload_score) &&
+        metrics.overload_score <= policy_.overload_scale_down;
 
     const bool improved_best =
         metrics.throughput_per_second > 0.0 &&
@@ -271,7 +281,7 @@ AutoScaleDecision AutoScaler::update(const AutoScaleMetrics& metrics) {
         next_workers = active_workers_ > step ? active_workers_ - step : policy_.min_workers;
         next_workers = std::max(policy_.min_workers, next_workers);
         reason = "output_backpressure";
-    } else if (!in_cooldown && input_pressure && !output_blocked &&
+    } else if (!in_cooldown && (input_pressure || overload_pressure) && !output_blocked &&
                active_workers_ < policy_.max_workers) {
         // When a job has sustained input and no downstream backpressure, the
         // pipeline is asking for more capacity. Short throughput windows are
@@ -280,7 +290,7 @@ AutoScaleDecision AutoScaler::update(const AutoScaleMetrics& metrics) {
         bad_probe_samples_ = 0;
         const std::size_t step = worker_step();
         next_workers = std::min(policy_.max_workers, active_workers_ + step);
-        reason = "input_pressure";
+        reason = overload_pressure ? "overload_pressure" : "input_pressure";
     } else if (!in_cooldown && worse_than_best) {
         ++bad_probe_samples_;
         if (bad_probe_samples_ >= policy_.backoff_confirmation_samples) {
@@ -291,12 +301,12 @@ AutoScaleDecision AutoScaler::update(const AutoScaleMetrics& metrics) {
             next_workers = best_workers_;
             reason = "return_to_best";
         }
-    } else if (!in_cooldown && input_idle && active_workers_ > policy_.min_workers) {
+    } else if (!in_cooldown && (input_idle || overload_idle) && active_workers_ > policy_.min_workers) {
         bad_probe_samples_ = 0;
         const std::size_t step = worker_step();
         next_workers = active_workers_ > step ? active_workers_ - step : policy_.min_workers;
         next_workers = std::max(policy_.min_workers, next_workers);
-        reason = "input_idle";
+        reason = overload_idle ? "overload_underload" : "input_idle";
     }
 
     previous_throughput_ = metrics.throughput_per_second;
@@ -504,11 +514,15 @@ void PipelineAutoScaleRunner::loop() {
 
 bool PipelineAutoScaleRunner::stage_can_scale_up(const Stage& stage,
                                                  const AutoScaleMetrics& metrics) const noexcept {
+    const bool overload_pressure =
+        std::isfinite(metrics.overload_score) &&
+        metrics.overload_score >= stage.policy.overload_scale_up;
     return stage.job != nullptr &&
            stage.job->active_worker_limit() < stage.policy.max_workers &&
-           (metrics.input_fullness >= stage.policy.scale_up_input_fullness ||
-            metrics.input_available_ratio >= 0.95) &&
-           metrics.busy_ratio >= stage.policy.busy_scale_up &&
+           (((metrics.input_fullness >= stage.policy.scale_up_input_fullness ||
+              metrics.input_available_ratio >= 0.95) &&
+             metrics.busy_ratio >= stage.policy.busy_scale_up) ||
+            overload_pressure) &&
            metrics.output_fullness < stage.policy.scale_up_output_fullness_limit &&
            metrics.wait_output_ratio < 0.25;
 }
@@ -533,7 +547,10 @@ bool PipelineAutoScaleRunner::stage_should_advance(const Stage& stage,
         (metrics.input_fullness >= stage.policy.scale_up_input_fullness ||
          metrics.input_available_ratio >= 0.95) &&
         metrics.busy_ratio >= stage.policy.busy_scale_up;
-    return input_pressure && decision.active_workers >= stage.policy.max_workers;
+    const bool overload_pressure =
+        std::isfinite(metrics.overload_score) &&
+        metrics.overload_score >= stage.policy.overload_scale_up;
+    return (input_pressure || overload_pressure) && decision.active_workers >= stage.policy.max_workers;
 }
 
 std::size_t PipelineAutoScaleRunner::select_stage(const std::vector<AutoScaleMetrics>& metrics) const noexcept {
