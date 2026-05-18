@@ -2,10 +2,39 @@
 
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 #include <thread>
 
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 namespace hypersync {
+namespace {
+
+void pin_current_worker_to_non_reactor_cpu() noexcept {
+#if defined(__linux__)
+    constexpr unsigned int kReservedReactorCores = 16U;
+    const unsigned int cpu_count = std::thread::hardware_concurrency();
+    if (cpu_count <= kReservedReactorCores) {
+        return;
+    }
+
+    static std::atomic<unsigned int> next_worker_cpu {0};
+    const unsigned int worker_cpu_span = cpu_count - kReservedReactorCores;
+    const unsigned int cpu_index = kReservedReactorCores +
+                                   (next_worker_cpu.fetch_add(1U, std::memory_order_relaxed) % worker_cpu_span);
+
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(static_cast<int>(cpu_index), &set);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+}
+
+}  // namespace
 
 ThreadedJob::ThreadedJob(std::size_t worker_count)
     : worker_count_(worker_count),
@@ -178,6 +207,7 @@ std::optional<BufferHandle> ThreadedJob::wait_for_pool(std::size_t worker_index,
 }
 
 void ThreadedJob::worker_entry(std::size_t worker_index) {
+    pin_current_worker_to_non_reactor_cpu();
     runtime_metrics_.enter_worker(worker_index);
     try {
         run_worker(worker_index);
