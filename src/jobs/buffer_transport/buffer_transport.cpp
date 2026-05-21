@@ -245,7 +245,7 @@ ScopedFd BufferSenderJob::connect() const {
     if (endpoint_.kind == BufferTransportKind::unix_socket) {
         return connect_unix(endpoint_.path.string(), 500, 10);
     }
-    return connect_tcp(endpoint_.host, endpoint_.port, 500, 10);
+    return connect_tcp(endpoint_.host, endpoint_.port, 500, 200);
 }
 
 BufferPrioritySenderJob::BufferPrioritySenderJob(std::size_t worker_count,
@@ -304,7 +304,7 @@ ScopedFd BufferPrioritySenderJob::connect() const {
     if (endpoint_.kind == BufferTransportKind::unix_socket) {
         return connect_unix(endpoint_.path.string(), 500, 10);
     }
-    return connect_tcp(endpoint_.host, endpoint_.port, 500, 10);
+    return connect_tcp(endpoint_.host, endpoint_.port, 500, 200);
 }
 
 bool BufferPrioritySenderJob::take_next_buffer(std::size_t worker_index, BufferHandle& handle) {
