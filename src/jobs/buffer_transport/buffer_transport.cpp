@@ -8,10 +8,12 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace hypersync {
@@ -91,8 +93,33 @@ void send_buffer_frame(int fd,
                        const BufferPayloadSizeFn& payload_size_fn) {
     const std::size_t payload_bytes = transport_payload_bytes(pool, handle, payload_size_fn);
     const std::array<std::byte, 32> header = make_header(handle.pool_id, payload_bytes);
-    write_all(fd, header.data(), header.size());
-    write_all(fd, pool.data(handle), payload_bytes);
+    std::array<iovec, 2> iov {{
+        {const_cast<std::byte*>(header.data()), header.size()},
+        {pool.data(handle), payload_bytes},
+    }};
+    int iov_count = payload_bytes == 0U ? 1 : 2;
+    while (iov_count > 0) {
+        const ssize_t written = ::writev(fd, iov.data(), iov_count);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            throw std::system_error(errno, std::generic_category(), "writev failed");
+        }
+        if (written == 0) {
+            throw std::runtime_error("writev wrote zero bytes");
+        }
+        std::size_t remaining = static_cast<std::size_t>(written);
+        while (iov_count > 0 && remaining >= iov.front().iov_len) {
+            remaining -= iov.front().iov_len;
+            iov[0] = iov[1];
+            --iov_count;
+        }
+        if (iov_count > 0 && remaining != 0U) {
+            iov.front().iov_base = static_cast<std::byte*>(iov.front().iov_base) + remaining;
+            iov.front().iov_len -= remaining;
+        }
+    }
 }
 
 struct ParsedHeader {
