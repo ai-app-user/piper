@@ -14,6 +14,22 @@
 namespace hypersync {
 namespace {
 
+void pin_current_thread_to_cpu_index(unsigned int cpu_index) noexcept {
+#if defined(__linux__)
+    const unsigned int hardware_cpus = std::thread::hardware_concurrency();
+    if (hardware_cpus == 0U) {
+        return;
+    }
+
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(static_cast<int>(cpu_index % hardware_cpus), &set);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+    (void)cpu_index;
+#endif
+}
+
 void pin_current_worker_to_non_reactor_cpu() noexcept {
 #if defined(__linux__)
     constexpr unsigned int kReservedReactorCores = 16U;
@@ -21,16 +37,12 @@ void pin_current_worker_to_non_reactor_cpu() noexcept {
     if (cpu_count <= kReservedReactorCores) {
         return;
     }
-
     static std::atomic<unsigned int> next_worker_cpu {0};
     const unsigned int worker_cpu_span = cpu_count - kReservedReactorCores;
     const unsigned int cpu_index = kReservedReactorCores +
                                    (next_worker_cpu.fetch_add(1U, std::memory_order_relaxed) % worker_cpu_span);
 
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(static_cast<int>(cpu_index), &set);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    pin_current_thread_to_cpu_index(cpu_index);
 #endif
 }
 
@@ -110,6 +122,11 @@ std::size_t ThreadedJob::worker_count() const noexcept {
 
 std::size_t ThreadedJob::active_worker_limit() const noexcept {
     return active_worker_limit_.load(std::memory_order_acquire);
+}
+
+void ThreadedJob::set_worker_cpu_affinity(std::size_t base_cpu, std::size_t cpu_count) noexcept {
+    affinity_base_cpu_.store(base_cpu, std::memory_order_release);
+    affinity_cpu_count_.store(cpu_count, std::memory_order_release);
 }
 
 std::size_t ThreadedJob::set_active_worker_limit(std::size_t active_workers) noexcept {
@@ -207,7 +224,13 @@ std::optional<BufferHandle> ThreadedJob::wait_for_pool(std::size_t worker_index,
 }
 
 void ThreadedJob::worker_entry(std::size_t worker_index) {
-    pin_current_worker_to_non_reactor_cpu();
+    const std::size_t affinity_count = affinity_cpu_count_.load(std::memory_order_acquire);
+    if (affinity_count != 0U) {
+        const std::size_t affinity_base = affinity_base_cpu_.load(std::memory_order_acquire);
+        pin_current_thread_to_cpu_index(static_cast<unsigned int>(affinity_base + (worker_index % affinity_count)));
+    } else {
+        pin_current_worker_to_non_reactor_cpu();
+    }
     runtime_metrics_.enter_worker(worker_index);
     try {
         run_worker(worker_index);

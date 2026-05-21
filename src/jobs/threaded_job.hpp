@@ -47,6 +47,10 @@ public:
     // cooperatively between work items instead of being killed mid-operation.
     [[nodiscard]] std::size_t active_worker_limit() const noexcept;
 
+    // Pin workers to base_cpu + worker_index % cpu_count when cpu_count > 0.
+    // By default workers use the shared non-reactor CPU corridor.
+    void set_worker_cpu_affinity(std::size_t base_cpu, std::size_t cpu_count) noexcept;
+
     // Adjust active workers in [1, worker_count()]. Returns the clamped value.
     std::size_t set_active_worker_limit(std::size_t active_workers) noexcept;
 
@@ -109,6 +113,8 @@ private:
     std::atomic<bool> wait_requested_ {false};
     std::atomic<std::size_t> active_worker_limit_;
     std::atomic<std::size_t> active_workers_ {0};
+    std::atomic<std::size_t> affinity_base_cpu_ {0};
+    std::atomic<std::size_t> affinity_cpu_count_ {0};
 };
 
 }  // namespace hypersync
