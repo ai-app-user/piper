@@ -63,6 +63,10 @@ public:
     // Highest observed depth, clamped to configured capacity.
     [[nodiscard]] std::size_t high_watermark() const noexcept;
 
+    // Optional external counter updated on successful push/pop. This is used
+    // by low-overhead telemetry paths that must not poll queue internals.
+    void set_depth_counter(std::atomic<std::int64_t>* counter) noexcept;
+
     // Total successful pushes.
     [[nodiscard]] std::uint64_t push_count() const noexcept;
 
@@ -121,6 +125,7 @@ private:
     std::atomic<std::size_t> high_watermark_ {0};
     std::atomic<std::uint64_t> push_count_ {0};
     std::atomic<std::uint64_t> pop_count_ {0};
+    std::atomic<std::int64_t>* depth_counter_ = nullptr;
     std::atomic<bool> closed_ {false};
     mutable std::mutex wait_mutex_;
     std::condition_variable cv_not_full_;
@@ -146,6 +151,9 @@ public:
 
     // Highest observed total depth across all shards.
     [[nodiscard]] std::size_t high_watermark() const noexcept;
+
+    // Optional external counter updated on successful push/pop across all shards.
+    void set_depth_counter(std::atomic<std::int64_t>* counter) noexcept;
 
     // Total successful pushes across all shards.
     [[nodiscard]] std::uint64_t push_count() const noexcept;

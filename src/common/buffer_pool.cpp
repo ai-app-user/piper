@@ -88,6 +88,10 @@ std::size_t BufQueue::high_watermark() const noexcept {
     return high_watermark_.load(std::memory_order_acquire);
 }
 
+void BufQueue::set_depth_counter(std::atomic<std::int64_t>* counter) noexcept {
+    depth_counter_ = counter;
+}
+
 std::uint64_t BufQueue::push_count() const noexcept {
     return push_count_.load(std::memory_order_acquire);
 }
@@ -158,6 +162,9 @@ bool BufQueue::try_pop(BufferHandle& out) {
 
     out = cell->value;
     depth_.fetch_sub(1U, std::memory_order_acq_rel);
+    if (depth_counter_ != nullptr) {
+        depth_counter_->fetch_sub(1, std::memory_order_relaxed);
+    }
     pop_count_.fetch_add(1U, std::memory_order_relaxed);
     cell->sequence.store(position + ring_capacity_, std::memory_order_release);
     release_reserved_slot();
@@ -257,6 +264,9 @@ bool BufQueue::enqueue_reserved(const BufferHandle& value) {
     cell->value = value;
     cell->sequence.store(position + 1U, std::memory_order_release);
     const std::size_t new_depth = depth_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+    if (depth_counter_ != nullptr) {
+        depth_counter_->fetch_add(1, std::memory_order_relaxed);
+    }
     update_high_watermark(new_depth);
     push_count_.fetch_add(1U, std::memory_order_relaxed);
     cv_not_empty_.notify_one();
@@ -306,6 +316,12 @@ std::size_t ShardedBufQueue::size() const noexcept {
 
 std::size_t ShardedBufQueue::high_watermark() const noexcept {
     return high_watermark_.load(std::memory_order_acquire);
+}
+
+void ShardedBufQueue::set_depth_counter(std::atomic<std::int64_t>* counter) noexcept {
+    for (auto& queue : shards_) {
+        queue->set_depth_counter(counter);
+    }
 }
 
 std::uint64_t ShardedBufQueue::push_count() const noexcept {
