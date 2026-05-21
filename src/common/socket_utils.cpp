@@ -168,8 +168,8 @@ ScopedFd connect_tcp(std::string_view host, std::uint16_t port, int retries, int
             if (!fd.valid()) {
                 continue;
             }
+            tune_stream_socket(fd.get());
             if (connect_with_timeout(fd.get(), current->ai_addr, current->ai_addrlen, retry_delay_ms)) {
-                tune_stream_socket(fd.get());
                 return fd;
             }
         }
@@ -203,6 +203,7 @@ ScopedFd listen_tcp(std::string_view host, std::uint16_t port, int backlog) {
 
         int reuse = 1;
         ::setsockopt(fd.get(), SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        tune_stream_socket(fd.get());
         if (::bind(fd.get(), current->ai_addr, current->ai_addrlen) != 0) {
             continue;
         }
