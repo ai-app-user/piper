@@ -9,8 +9,10 @@
 #include <thread>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/types.h>
@@ -98,6 +100,51 @@ void tune_stream_socket(int fd) noexcept {
     best_effort_enable_bbr(fd);
 }
 
+bool connect_with_timeout(int fd, const struct sockaddr* address, socklen_t address_len, int timeout_ms) {
+    const int original_flags = ::fcntl(fd, F_GETFL, 0);
+    if (original_flags < 0) {
+        return ::connect(fd, address, address_len) == 0;
+    }
+    if (::fcntl(fd, F_SETFL, original_flags | O_NONBLOCK) != 0) {
+        return ::connect(fd, address, address_len) == 0;
+    }
+
+    const int connect_result = ::connect(fd, address, address_len);
+    if (connect_result == 0) {
+        (void)::fcntl(fd, F_SETFL, original_flags);
+        return true;
+    }
+    if (errno != EINPROGRESS) {
+        (void)::fcntl(fd, F_SETFL, original_flags);
+        return false;
+    }
+
+    pollfd descriptor {};
+    descriptor.fd = fd;
+    descriptor.events = POLLOUT;
+    const int ready = ::poll(&descriptor, 1, timeout_ms);
+    if (ready <= 0) {
+        (void)::fcntl(fd, F_SETFL, original_flags);
+        errno = ready == 0 ? ETIMEDOUT : errno;
+        return false;
+    }
+
+    int socket_error = 0;
+    socklen_t socket_error_len = sizeof(socket_error);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_len) != 0) {
+        (void)::fcntl(fd, F_SETFL, original_flags);
+        return false;
+    }
+    if (socket_error != 0) {
+        (void)::fcntl(fd, F_SETFL, original_flags);
+        errno = socket_error;
+        return false;
+    }
+
+    (void)::fcntl(fd, F_SETFL, original_flags);
+    return true;
+}
+
 }  // namespace
 
 ScopedFd connect_tcp(std::string_view host, std::uint16_t port, int retries, int retry_delay_ms) {
@@ -121,7 +168,7 @@ ScopedFd connect_tcp(std::string_view host, std::uint16_t port, int retries, int
             if (!fd.valid()) {
                 continue;
             }
-            if (::connect(fd.get(), current->ai_addr, current->ai_addrlen) == 0) {
+            if (connect_with_timeout(fd.get(), current->ai_addr, current->ai_addrlen, retry_delay_ms)) {
                 tune_stream_socket(fd.get());
                 return fd;
             }
