@@ -474,7 +474,8 @@ RawBufferPool::RawBufferPool(BufferPoolId pool_id,
       capacity_(capacity),
       buffer_size_bytes_(std::max<std::size_t>(1U, buffer_size_bytes)),
       stride_size_bytes_(round_up_to_alignment(buffer_size_bytes_, alignment)),
-      storage_(checked_storage_bytes(capacity_, stride_size_bytes_)),
+      storage_size_bytes_(checked_storage_bytes(capacity_, stride_size_bytes_)),
+      storage_(allocate_storage(storage_size_bytes_, alignment)),
       free_indices_(),
       available_count_(capacity),
       generations_(capacity),
@@ -514,7 +515,7 @@ std::size_t RawBufferPool::stride_size_bytes() const noexcept {
 }
 
 std::size_t RawBufferPool::total_size_bytes() const noexcept {
-    return storage_.size();
+    return storage_size_bytes_;
 }
 
 std::size_t RawBufferPool::available() const noexcept {
@@ -600,11 +601,11 @@ const std::byte* RawBufferPool::data(const BufferHandle& handle) const {
 }
 
 std::byte* RawBufferPool::slot_data_unchecked(std::size_t index) noexcept {
-    return storage_.data() + index * stride_size_bytes_;
+    return storage_.get() + index * stride_size_bytes_;
 }
 
 const std::byte* RawBufferPool::slot_data_unchecked(std::size_t index) const noexcept {
-    return storage_.data() + index * stride_size_bytes_;
+    return storage_.get() + index * stride_size_bytes_;
 }
 
 std::size_t RawBufferPool::checked_storage_bytes(std::size_t capacity, std::size_t stride) {
@@ -612,6 +613,15 @@ std::size_t RawBufferPool::checked_storage_bytes(std::size_t capacity, std::size
         throw std::overflow_error("buffer pool storage size overflow");
     }
     return capacity * stride;
+}
+
+std::unique_ptr<std::byte, RawBufferPool::RawStorageDeleter> RawBufferPool::allocate_storage(std::size_t bytes,
+                                                                                             std::size_t alignment) {
+    if (bytes == 0U) {
+        return {nullptr, RawStorageDeleter{alignment}};
+    }
+    return {static_cast<std::byte*>(::operator new(bytes, std::align_val_t(alignment))),
+            RawStorageDeleter{alignment}};
 }
 
 void RawBufferPool::validate_handle_index(const BufferHandle& handle) const {

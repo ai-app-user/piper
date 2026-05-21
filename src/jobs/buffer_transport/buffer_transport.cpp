@@ -359,7 +359,7 @@ void BufferReceiverJob::run_worker(std::size_t worker_index) {
         fd = accept_one();
     }
     for (;;) {
-        std::array<std::byte, 32> header {};
+        std::array<std::byte, 32> header;
         {
             auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
             if (!read_exact_or_eof(fd.get(), header.data(), header.size())) {
@@ -372,11 +372,6 @@ void BufferReceiverJob::run_worker(std::size_t worker_index) {
         }
 
         BufferHandle handle = acquire_buffer(worker_index);
-        if (parsed.payload_bytes < output_pool_.buffer_size_bytes()) {
-            std::memset(static_cast<std::byte*>(output_pool_.data(handle)) + parsed.payload_bytes,
-                        0,
-                        output_pool_.buffer_size_bytes() - parsed.payload_bytes);
-        }
         {
             auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
             if (!read_exact_or_eof(fd.get(), output_pool_.data(handle), parsed.payload_bytes)) {
@@ -479,7 +474,7 @@ BufferTransportStats BufferStreamReceiverJob::stats() const {
 
 void BufferStreamReceiverJob::run_worker(std::size_t worker_index) {
     for (;;) {
-        std::array<std::byte, 32> header {};
+        std::array<std::byte, 32> header;
         {
             auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
             if (!read_exact_or_eof(fd_, header.data(), header.size())) {
@@ -492,11 +487,6 @@ void BufferStreamReceiverJob::run_worker(std::size_t worker_index) {
         }
 
         BufferHandle handle = acquire_buffer(worker_index);
-        if (parsed.payload_bytes < output_pool_.buffer_size_bytes()) {
-            std::memset(static_cast<std::byte*>(output_pool_.data(handle)) + parsed.payload_bytes,
-                        0,
-                        output_pool_.buffer_size_bytes() - parsed.payload_bytes);
-        }
         {
             auto io_scope = runtime_state_scope(worker_index, RuntimeState::wait_io);
             if (!read_exact_or_eof(fd_, output_pool_.data(handle), parsed.payload_bytes)) {

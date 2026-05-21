@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
@@ -262,7 +263,16 @@ public:
     [[nodiscard]] const std::byte* slot_data_unchecked(std::size_t index) const noexcept;
 
 private:
+    struct RawStorageDeleter {
+        std::size_t alignment = alignof(std::max_align_t);
+        void operator()(std::byte* ptr) const noexcept {
+            ::operator delete(ptr, std::align_val_t(alignment));
+        }
+    };
+
     [[nodiscard]] static std::size_t checked_storage_bytes(std::size_t capacity, std::size_t stride);
+    [[nodiscard]] static std::unique_ptr<std::byte, RawStorageDeleter> allocate_storage(std::size_t bytes,
+                                                                                        std::size_t alignment);
     void validate_handle_index(const BufferHandle& handle) const;
     void validate_live_handle(const BufferHandle& handle) const;
     void update_peak_in_use(std::size_t value) noexcept;
@@ -273,7 +283,8 @@ private:
     const std::size_t capacity_;
     const std::size_t buffer_size_bytes_;
     const std::size_t stride_size_bytes_;
-    std::vector<std::byte> storage_;
+    const std::size_t storage_size_bytes_;
+    std::unique_ptr<std::byte, RawStorageDeleter> storage_;
     mutable std::mutex free_mutex_;
     std::vector<std::uint32_t> free_indices_;
     mutable std::mutex wait_mutex_;
