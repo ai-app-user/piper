@@ -59,9 +59,9 @@ queues of opaque buffer handles.
 - Reusable Jobs should have one responsibility and avoid application-specific
   behavior.
 
-This keeps jobs composable: the same generator, discarder, sender, receiver,
-monitor, or transform helper can be reused in benchmarks, tests, scan pipelines,
-diff pipelines, sync pipelines, or application-specific tools.
+This keeps jobs composable: the same generator, discarder, monitor, transform
+helper, or Connector transport job can be reused in benchmarks, tests, scan
+pipelines, diff pipelines, sync pipelines, or application-specific tools.
 
 ### Queues Carry Ownership, Not Bytes
 
@@ -94,9 +94,9 @@ Piper encourages ownership transfer instead of memory copies.
   paths.
 
 Some applications must copy at external API boundaries, such as a kernel socket
-write or a third-party library callback. Piper keeps that concern inside backend
-or transport jobs so generic queues and job interfaces still move ownership, not
-bytes.
+write or a third-party library callback. Keep that concern inside backend jobs
+or Connector transport jobs so generic queues and job interfaces still move
+ownership, not bytes.
 
 ### Generic Infrastructure Stays Generic
 
@@ -104,7 +104,7 @@ Piper components should not understand application payloads.
 
 - Buffer pools manage raw fixed-size memory slots.
 - Queues manage buffer handles.
-- Sender and receiver jobs transport generic buffers.
+- Connector sender and receiver jobs transport generic buffers.
 - Discarder and generator jobs operate on generic buffers.
 - Monitoring reads counters and queue stats, not domain payloads.
 
@@ -227,9 +227,11 @@ schemas, hashing policy, parquet output, or sync/copy behavior:
 - raw preallocated buffer pools and opaque buffer handles
 - bounded buffer queues and sharded buffer queues
 - generic job/thread lifecycle helpers
-- generic producer, consumer, transform, generator, discarder, and transport jobs
-- socket helpers used by generic transports and status listeners
+- generic producer, consumer, transform, generator, and discarder jobs
 - small config and monitoring helpers that are useful across pipelines
+
+Generic socket transport lives in the sibling Connector project, which depends
+on Piper buffer/queue/job primitives and moves only opaque buffers plus lengths.
 
 The umbrella header is `piper/src/piper.hpp`; direct includes under
 `piper/src/common/`, `piper/src/jobs/`, and `piper/src/monitoring/` are also
