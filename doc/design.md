@@ -9,6 +9,43 @@ specific application domain. The rules in this section describe the recommended
 pattern Piper is designed to support. Applications may choose how strictly to
 enforce the pattern; Hypersync treats these rules as mandatory.
 
+### Composition Notation
+
+Piper documentation uses three levels of composition. The notation is intended
+to make diagrams readable at both conceptual and implementation depth.
+
+- `[JobName-N/options]` is a concrete job instance. `N` is the worker or lane
+  count when it matters. A job has explicit input(s), explicit output(s), owned
+  configuration, and one responsibility.
+- `(QueueName-N/options)` is a concrete queue or queue family. `N` is capacity,
+  shard count, or lane count; diagrams must state which meaning is being used
+  when it is not obvious from context.
+- `{PipelineName}` is a reusable pipeline block: a named sequence or graph of
+  jobs and queues. Like a job, a pipeline has declared input(s), output(s), and
+  configuration. Unlike a job, a pipeline is composition only; it must not hide
+  new execution mechanics outside its child jobs and queues.
+- `{{ScenarioName}}` is a use case or scenario: a named composition of
+  pipelines, jobs, and queues that describes a user-visible workflow or a
+  benchmark workflow.
+
+Examples:
+
+```text
+{MetaReader} = [FolderSeeder-1]->(FolderQueue)->[MetaReader-<backend>-N]
+{{Scanner}} = {MetaReader}->(MetaQueue)->{MetaWriter}
+```
+
+A pipeline may have variations, but the variation must be named or listed in
+configuration. For example `{MetaWriter}` may have `stats-only`,
+`partitioned-parquet`, and `discard` variants. A scenario should be readable at
+the conceptual level first, then expandable into concrete jobs and queues when
+debugging, tuning, or testing.
+
+Pipelines do not weaken the job boundary rules. A child job still communicates
+only through queues. A pipeline cannot justify direct calls between jobs,
+private side channels, unbounded hidden buffers, or payload copies that would be
+forbidden in the expanded graph.
+
 ### Jobs Connected by Queues
 
 The intended Piper model is a graph of independent Jobs connected by bounded

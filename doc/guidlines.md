@@ -11,6 +11,23 @@ standalone repository.
 - Merge or push to `main` only when the maintainer explicitly asks for a main
   merge or release promotion.
 
+## Pipeline Vocabulary
+
+- Use `[JobName-N/options]` for concrete jobs. `N` is the worker/lane count when
+  shown.
+- Use `(QueueName-N/options)` for concrete queues. If `N` could mean shard
+  count, queue depth, or lane count, say which one in the surrounding text.
+- Use `{PipelineName}` for reusable pipeline blocks. A pipeline has declared
+  input(s), output(s), configuration, and named variations, but it is only a
+  composition of jobs and queues.
+- Use `{{ScenarioName}}` for user-facing or benchmark scenarios. A scenario is
+  a composition of pipelines, jobs, and queues.
+- Document scenarios conceptually first, then provide the expanded concrete job
+  graph when performance tuning or debugging requires it.
+- Do not hide execution behind a pipeline name. Expanding a pipeline must reveal
+  normal jobs connected by normal queues, with no direct job-to-job calls or
+  private non-pipeline side channels.
+
 ## AI Session Context
 
 Keep AI session handoff context tracked in Git under `doc/ai/`.
@@ -29,4 +46,3 @@ Required layout:
 When the maintainer sends exactly `sync`, update `doc/ai/chat.md` and
 `doc/ai/kb.md` with the latest conversation and current important facts, then
 commit and push those context updates to `dev`.
-
