@@ -8,6 +8,7 @@
 // depending on Hypersync-specific NFS or metadata code.
 
 #include "common/buffer_pool.hpp"
+#include "common/buffer_format.hpp"
 #include "common/config.hpp"
 #include "common/fixed_string.hpp"
 #include "common/preallocated_ring.hpp"

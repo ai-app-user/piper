@@ -111,6 +111,74 @@ Piper components should not understand application payloads.
 Applications may interpret a buffer only after a Job owns the handle, normally
 through application-defined payload view helpers.
 
+### Generic Buffer Format
+
+Jobs are generic pipeline components. A job may have zero, one, or multiple
+input queues and zero, one, or multiple output queues. In the common case, a job
+does not know what is inside a buffer; it only owns the `BufferHandle` while it
+routes, transforms, discards, transports, hashes, or persists the underlying
+bytes.
+
+Raw buffers are preallocated once and reused until process exit. Hot paths must
+not allocate or free payload buffers during steady-state execution. Pipelines
+commonly use physical buffer classes shaped as payload space plus reserve space,
+for example `4KiB + 4KiB`, `128KiB + 4KiB`, and `1MiB + 4KiB`. The reserve
+exists so external APIs can fill data bytes first and a later stage can attach
+generic metadata without allocating or moving the payload into a different
+buffer.
+
+Piper supports an optional self-describing metadata trailer for buffers. The
+last bytes of a physical buffer contain this footer:
+
+```text
+[data_size:u32][metadata_version:u16][metadata_size:u16][magic:u16]
+```
+
+- `magic` is always the final two bytes and proves that the buffer has a
+  trailer.
+- `metadata_size` is the number of metadata bytes, including the footer and
+  magic bytes.
+- `metadata_version` identifies the generic metadata layout.
+- `data_size` is the logical data byte count, allowing a physical buffer to be
+  treated as a smaller logical buffer.
+
+The canonical metadata block is stored at the end of the physical buffer. When
+there is enough unused reserve immediately after logical data, Piper may also
+copy the same metadata block directly after the data bytes:
+
+```text
+[logical data][inline metadata copy][unused reserve][canonical metadata]
+```
+
+That inline copy allows a shrunk logical view shaped as `[data][metadata]`
+without knowing the original physical allocation size.
+
+The generic metadata can include integrity fields:
+
+```text
+checksum_algorithm
+data_checksum
+metadata_checksum
+```
+
+`checksum_algorithm=none` means checksums are disabled. Any checksum field set
+to `0` also means that specific checksum is not used. Metadata defines which
+algorithm is used; readers must not infer it from the payload. When metadata
+checksums are enabled, the metadata checksum covers the metadata block with the
+metadata checksum field itself treated as zero.
+
+A physical buffer may contain multiple logical sub-buffers. In that case the
+metadata contains a generic entry table with per-sub-buffer offsets, data sizes,
+optional metadata location/size, flags, and optional checksums:
+
+```text
+[sub-buffer-1][sub-buffer-2][sub-buffer-3][reserve][metadata table][footer]
+```
+
+The base buffer format is intentionally domain-free. It must not mention files,
+NFS, scans, hashes, sync, copy, parquet, or product scenarios. Those meanings
+belong in higher-level codecs.
+
 ### Waiting and Backpressure
 
 The recommended waiting model is simple:

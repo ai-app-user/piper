@@ -27,6 +27,17 @@ standalone repository.
 - Do not hide execution behind a pipeline name. Expanding a pipeline must reveal
   normal jobs connected by normal queues, with no direct job-to-job calls or
   private non-pipeline side channels.
+- Keep jobs generic. A job may have zero, one, or multiple buffer queues as
+  input and zero, one, or multiple buffer queues as output. Most jobs should
+  treat buffers as opaque bytes and should not inspect product-specific payload
+  layouts unless that is their explicit responsibility.
+- Raw buffers are preallocated once and reused until app exit. Hot paths must
+  not allocate or free payload buffers during steady-state work.
+- If a buffer needs self-description, use the generic Piper buffer metadata
+  footer: final magic bytes, metadata size, metadata version, logical data size,
+  optional checksum algorithm/checksums, and optional packed sub-buffer entries.
+  `checksum_algorithm=none` or an individual checksum value of `0` means that
+  checksum is not used.
 
 ## AI Session Context
 
