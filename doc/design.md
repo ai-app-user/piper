@@ -69,6 +69,10 @@ Piper queues are designed to store only `BufferHandle` values. A queue should
 not store paths, file records, serialized payloads, `std::string`,
 `std::vector`, typed records, or raw payload bytes.
 
+Piper no longer exposes the old `QueueJob` / `TypedQueueJob` message layer.
+Jobs that need a hot-path edge must use `BufQueue` or `ShardedBufQueue`; typed
+helper classes can exist only outside the pipeline boundary.
+
 Pushing to a queue transfers ownership of an existing buffer handle. Popping
 from a queue transfers ownership to the consumer. The queue itself does not
 copy, inspect, allocate, free, parse, or transform payload bytes.

@@ -19,7 +19,6 @@
 #include "jobs/buffer_producer_job.hpp"
 #include "jobs/buffer_transform_job.hpp"
 #include "jobs/job.hpp"
-#include "jobs/queue_job.hpp"
 #include "jobs/threaded_job.hpp"
 #include "monitoring/autoscaler.hpp"
 #include "monitoring/runtime_metrics.hpp"
